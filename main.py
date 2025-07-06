@@ -1,54 +1,55 @@
-
-import requests
 import pandas as pd
-from datetime import datetime
-from telegram import Bot
+import requests
+import time
 
-TELEGRAM_TOKEN = '8088154821:AAH3pXp81Lotj6teAZ-Xz2IAsZksgUdep6g'
-CHAT_ID = '6359194989'
-CSV_FILE = 'trade_log.csv'
+def fetch_candles(symbol="ETHUSDT", interval="5m", limit=1000):
+    url = f"https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    response = requests.get(url)
+    data = response.json()
 
-def fetch_data():
-    url = 'https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=1000'
-    data = requests.get(url).json()
     df = pd.DataFrame(data, columns=[
-        'open_time', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'quote_asset_volume', 'number_of_trades',
-        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base", "taker_buy_quote", "ignore"
     ])
-    df['close'] = df['close'].astype(float)
-    df['low'] = df['low'].astype(float)
-    df['high'] = df['high'].astype(float)
-    df['open'] = df['open'].astype(float)
+    df["close"] = df["close"].astype(float)
+    df["low"] = df["low"].astype(float)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     return df
 
+def find_support_levels(df, lookback=20, threshold=0.995):
+    supports = []
+    for i in range(lookback, len(df)):
+        low_slice = df["low"][i - lookback:i]
+        min_price = low_slice.min()
+        if df["low"].iloc[i] <= min_price * threshold:
+            supports.append((df["timestamp"].iloc[i], df["low"].iloc[i]))
+    return supports
+
 def check_signal(df):
-    last_close = df.iloc[-1]['close']
-    support_zone = df['low'].rolling(20).min().iloc[-1]
-    confirmation = df['close'].iloc[-1] > df['close'].iloc[-2]
-    if last_close <= support_zone and confirmation:
-        return True, support_zone
-    return False, None
+    if len(df) < 21:
+        print("No hay suficientes velas para análisis")
+        return None, None
 
-def log_trade(entry_price, take_profit, stop_loss):
-    now = datetime.utcnow().isoformat()
-    row = f"{now},{entry_price},{take_profit},{stop_loss}\n"
-    with open(CSV_FILE, "a") as file:
-        file.write(row)
+    support_levels = find_support_levels(df)
+    last_close = df.iloc[-1]["close"]
 
-def send_alert(message):
-    Bot(token=TELEGRAM_TOKEN).send_message(chat_id=CHAT_ID, text=message)
+    for time_support, price_support in reversed(support_levels):
+        if abs(last_close - price_support) / price_support < 0.01:
+            print(f"🟢 Señal de compra: Precio {last_close} cerca de soporte {price_support}")
+            return last_close, price_support
+
+    print("❌ No hay señal clara de compra")
+    return None, None
 
 def main():
-    df = fetch_data()
+    df = fetch_candles()
     signal, support = check_signal(df)
-    if signal:
-        entry = df.iloc[-1]['close']
-        sl = support - 5
-        tp = entry + (entry - sl) * 1.5
-        log_trade(entry, tp, sl)
-        msg = f"📈 Señal de COMPRA detectada\nEntrada: {entry}\nTP: {tp:.2f}\nSL: {sl:.2f}"
-        send_alert(msg)
+    if signal and support:
+        with open("operaciones.csv", "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')},{signal},{support}\n")
+        print("✅ Señal registrada en operaciones.csv")
 
 if __name__ == "__main__":
     main()
